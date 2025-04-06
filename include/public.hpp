@@ -8,6 +8,8 @@ enum MsgType
     LOGIN_MSG = 1,
     // 登录响应消息
     LOGIN_MSG_ACK,
+    // 登录具体信息消息
+    LOGIN_INFO_ACK,
     // 登出消息
     LOGOUT_MSG,
     // 注册消息

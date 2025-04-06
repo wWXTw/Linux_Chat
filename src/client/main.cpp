@@ -90,7 +90,6 @@ void Login(int clientfd)
         }
         else
         {
-            cout << "success1" << endl;
             json response = json::parse(buffer);
             if (response["errorid"].get<int>() != 0)
             {
@@ -99,81 +98,98 @@ void Login(int clientfd)
             }
             else
             {
-                cout << "success2" << endl;
-
                 // 登陆成功
                 // 记录当前用户的ID与用户名
                 currentUser.setId(response["id"].get<int>());
                 currentUser.setName(response["name"]);
+                cout << "登录成功!" << endl;
 
-                // 记录当前用户的好友列表
-                if (response.contains("friends"))
+                // 等待服务器端登录的详细数据
+                while (true)
                 {
-                    // 初始化全局变量
-                    currentUser_FriendList.clear();
-
-                    vector<string> friends = response["friends"];
-                    for (string &str : friends)
+                    memset(buffer, 0, sizeof(buffer));
+                    len = recv(clientfd, buffer, 1024, 0);
+                    if (len <= 0)
                     {
-                        json js = json::parse(str);
-                        User fri;
-                        fri.setId(js["id"].get<int>());
-                        fri.setName(js["name"]);
-                        fri.setState(js["state"]);
-                        currentUser_FriendList.push_back(fri);
+                        cerr << "接收用户信息失败" << endl;
+                        return;
                     }
-                }
 
-                // 记录当前用户的群组列表
-                if (response.contains("group"))
-                {
-                    // 初始化全局变量
-                    currentUser_GroupList.clear();
-
-                    vector<string> group = response["group"];
-                    for (string &g : group)
+                    json info_response = json::parse(buffer);
+                    if (info_response["msgid"].get<int>() == LOGIN_INFO_ACK)
                     {
-                        // 群组基本信息
-                        json js_g = json::parse(g);
-                        Group temp;
-                        temp.setId(js_g["groupid"].get<int>());
-                        temp.setName(js_g["name"]);
-                        temp.setDesc(js_g["desc"]);
-
-                        // 群组成员信息
-                        vector<string> users_vec = js_g["users"];
-                        for (string &user : users_vec)
+                        // 记录当前用户的好友列表
+                        if (info_response.contains("friends"))
                         {
-                            GroupUser mem;
-                            json user_js = json::parse(user);
-                            mem.setId(user_js["guserid"].get<int>());
-                            mem.setName(user_js["gusername"]);
-                            mem.setRole(user_js["guserrole"]);
-                            mem.setState(user_js["guserstate"]);
+                            // 初始化全局变量
+                            currentUser_FriendList.clear();
 
-                            temp.getUsers().push_back(mem);
+                            vector<string> friends = info_response["friends"];
+                            for (string &str : friends)
+                            {
+                                json js = json::parse(str);
+                                User fri;
+                                fri.setId(js["id"].get<int>());
+                                fri.setName(js["name"]);
+                                fri.setState(js["state"]);
+                                currentUser_FriendList.push_back(fri);
+                            }
                         }
 
-                        currentUser_GroupList.push_back(temp);
-                    }
-                }
-
-                // 显示登录用户的基本信息
-                showCurrentUser();
-
-                // 显示当前用户的离线消息
-                if (response.contains("offlineMsg"))
-                {
-                    // 离线信息 私聊与群聊的区分
-                    // TODO...
-                    cout << "============离线信息============" << endl;
-                    unordered_map<string, vector<string>> offlineMsg = response["offlineMsg"].get<unordered_map<string, vector<string>>>();
-                    for (auto &pair : offlineMsg)
-                    {
-                        for (auto &str : pair.second)
+                        // 记录当前用户的群组列表
+                        if (info_response.contains("group"))
                         {
-                            cout << pair.first << "   " << str << endl;
+                            // 初始化全局变量
+                            currentUser_GroupList.clear();
+
+                            vector<string> group = info_response["group"];
+                            for (string &g : group)
+                            {
+                                // 群组基本信息
+                                json js_g = json::parse(g);
+                                Group temp;
+                                temp.setId(js_g["groupid"].get<int>());
+                                temp.setName(js_g["name"]);
+                                temp.setDesc(js_g["desc"]);
+
+                                // 群组成员信息
+                                vector<string> users_vec = js_g["users"];
+                                for (string &user : users_vec)
+                                {
+                                    GroupUser mem;
+                                    json user_js = json::parse(user);
+                                    mem.setId(user_js["guserid"].get<int>());
+                                    mem.setName(user_js["gusername"]);
+                                    mem.setRole(user_js["guserrole"]);
+                                    mem.setState(user_js["guserstate"]);
+
+                                    temp.getUsers().push_back(mem);
+                                }
+
+                                currentUser_GroupList.push_back(temp);
+                            }
                         }
+
+                        // 显示登录用户的基本信息
+                        showCurrentUser();
+
+                        // 显示当前用户的离线消息
+                        if (info_response.contains("offlineMsg"))
+                        {
+                            // 离线信息 私聊与群聊的区分
+                            // TODO...
+                            cout << "============离线信息============" << endl;
+                            unordered_map<string, vector<string>> offlineMsg = info_response["offlineMsg"].get<unordered_map<string, vector<string>>>();
+                            for (auto &pair : offlineMsg)
+                            {
+                                for (auto &str : pair.second)
+                                {
+                                    cout << pair.first << "   " << str << endl;
+                                }
+                            }
+                        }
+
+                        break;
                     }
                 }
 

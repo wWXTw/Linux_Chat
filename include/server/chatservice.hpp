@@ -5,11 +5,13 @@
 #include <functional>
 #include <muduo/net/TcpConnection.h>
 #include <mutex>
+#include <string>
 #include "json.hpp"
 #include "usermodel.hpp"
 #include "offlinemessagemodel.hpp"
 #include "friendmodel.hpp"
 #include "groupmodel.hpp"
+#include "kafkaservice.hpp"
 #include "redis.hpp"
 
 using namespace std;
@@ -33,8 +35,11 @@ private:
     // 互斥锁
     mutex _mtx;
 
-    // Redis服务对象
-    Redis _redis;
+    // // Redis服务对象
+    // Redis _redis;
+
+    // Kafka服务对象
+    KafkaService _kafka;
 
     // 用户表处理器
     UserModel _user;
@@ -88,8 +93,11 @@ public:
     // 用户退出登录业务
     void logout(const TcpConnectionPtr &conn, json &js, Timestamp time);
 
-    // 从redis消息队列中获取订阅的消息
-    void handleRedisSubscribeMessage(int userid, string msg);
+    // // 从redis消息队列中获取订阅的消息
+    // void handleRedisSubscribeMessage(int userid, string msg);
+
+    // 从Kafka消息队列中获取订阅的消息
+    void handleKafkaMessage(string topic, string msg);
 };
 
 #endif

@@ -22,11 +22,18 @@ ChatService::ChatService()
     _handler.insert({GROUP_CHAT_MSG, bind(&ChatService::groupChat, this, _1, _2, _3)});
     _handler.insert({LOGOUT_MSG, bind(&ChatService::logout, this, _1, _2, _3)});
 
-    // 连接Redis服务器
-    if (_redis.connect())
+    // // 连接Redis服务器
+    // if (_redis.connect())
+    // {
+    //     // 设置上报信息的回调
+    //     _redis.init_notify_handler(bind(&ChatService::handleRedisSubscribeMessage, this, _1, _2));
+    // }
+
+    // 连接Kafka中间件
+    if (_kafka.connect())
     {
-        // 设置上报信息的回调
-        _redis.init_notify_handler(bind(&ChatService::handleRedisSubscribeMessage, this, _1, _2));
+        // 设置回调
+        _kafka.init_notify_handler(bind(&ChatService::handleKafkaMessage, this, _1, _2));
     }
 }
 
@@ -67,32 +74,46 @@ void ChatService::logout(const TcpConnectionPtr &conn, json &js, Timestamp time)
     user.setState("offline");
     _user.updateState(user);
 
-    // 从Redis中取消订阅
-    _redis.unsubscribe(userid);
+    // // 从Redis中取消订阅
+    // _redis.unsubscribe(userid);
+
+    // 取消订阅Topic
+    string topic = to_string(userid);
+    _kafka.unsubscribe(topic);
 }
 
 void ChatService::clientClose(const TcpConnectionPtr &conn)
 {
     User user;
+    cout << "external" << endl;
     // 通过conn获取用户Id (注意线程安全)
     {
         unique_lock<mutex> g1(_mtx);
         // 遍历MAP表过于繁琐
-        // TODO...
+        // unordered_map反向映射...
         for (auto it = _userConn.begin(); it != _userConn.end(); it++)
         {
             if (it->second == conn)
             {
+                cout << "internal" << endl;
                 // 从MAP表中删除连接信息
                 user.setId(it->first);
                 _userConn.erase(it);
+
+                // 修改数据库中的状态
+                user.setState("offline");
+                _user.updateState(user);
+
+                // // 从Redis中取消订阅
+                // _redis.unsubscribe(user.getId());
+
+                string topic = to_string(user.getId());
+                _kafka.unsubscribe(topic);
+
                 break;
             }
         }
     }
-    // 修改数据库中的状态
-    user.setState("offline");
-    _user.updateState(user);
 }
 
 void ChatService::serverClose()
@@ -107,7 +128,7 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
     string name = js["name"];
     string password = js["password"];
     User result = _user.queryUserName(name);
-    if (result.getName() == name && result.getPassword() == password)
+    if (result.getPassword() == password)
     {
         if (result.getState() == "online")
         {
@@ -131,8 +152,11 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
                 _userConn.insert({result.getId(), conn});
             }
 
-            // 向Redis订阅通道
-            _redis.subscribe(result.getId());
+            // // 向Redis订阅通道
+            // _redis.subscribe(result.getId());
+
+            string topic = to_string(result.getId());
+            _kafka.subscribe(topic);
 
             json response;
             response["msgid"] = LOGIN_MSG_ACK;
@@ -140,63 +164,70 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
             response["id"] = result.getId();
             response["name"] = result.getName();
 
-            // 查询是否有离线消息
-            unordered_map<string, vector<string>> offlineMsg = _offline.query(result.getId());
-            if (!offlineMsg.empty())
-            {
-                response["offlineMsg"] = offlineMsg;
-                _offline.remove(result.getId());
-            }
-
-            // 查询好友信息
-            vector<User> friends = _friend.query(result.getId());
-            if (!friends.empty())
-            {
-                vector<string> fri;
-                // 好友下线的响应
-                // TODO...
-                // 双方好友的
-                // TODO...
-                for (User &user : friends)
-                {
-                    json temp;
-                    temp["id"] = user.getId();
-                    temp["name"] = user.getName();
-                    temp["state"] = user.getState();
-                    fri.push_back(temp.dump());
-                }
-                response["friends"] = fri;
-            }
-
-            // 查询群组信息
-            vector<Group> group = _group.queryGroup(result.getId());
-            if (!group.empty())
-            {
-                vector<string> gro;
-                for (Group &g : group)
-                {
-                    json temp;
-                    temp["groupid"] = g.getId();
-                    temp["name"] = g.getName();
-                    temp["desc"] = g.getDesc();
-                    vector<GroupUser> user_vec = g.getUsers();
-                    vector<string> gro_user;
-                    // 发送群组成员
-                    for (auto &guser : user_vec)
-                    {
-                        json mem;
-                        mem["guserid"] = guser.getId();
-                        mem["gusername"] = guser.getName();
-                        mem["guserrole"] = guser.getRole();
-                        mem["guserstate"] = guser.getState();
-                        gro_user.push_back(mem.dump());
-                    }
-                    temp["users"] = gro_user;
-                    gro.push_back(temp.dump());
-                }
-                response["group"] = gro;
-            }
+            // 先向客户端发送一个登录成功的消息
             conn->send(response.dump());
+
+            // 获取ID号
+            int userid = result.getId();
+            // 异步获取好友信息,群组信息与离线消息
+            thread([this, conn, userid]()
+                   {
+                    json response_info;
+                    response_info["msgid"] = LOGIN_INFO_ACK;
+                    // 查询是否有离线消息
+                    unordered_map<string, vector<string>> offlineMsg = _offline.query(userid);
+                    if (!offlineMsg.empty())
+                    {
+                        response_info["offlineMsg"] = offlineMsg;
+                        _offline.remove(userid);
+                    }
+
+                    // 查询好友信息
+                    vector<User> friends = _friend.query(userid);
+                    if (!friends.empty())
+                    {
+                        vector<string> fri;
+                        for (User &user : friends)
+                        {
+                            json temp;
+                            temp["id"] = user.getId();
+                            temp["name"] = user.getName();
+                            temp["state"] = user.getState();
+                            fri.push_back(temp.dump());
+                        }
+                        response_info["friends"] = fri;
+                    }
+
+                    // 查询群组信息
+                    vector<Group> group = _group.queryGroup(userid);
+                    if (!group.empty())
+                    {
+                        vector<string> gro;
+                        for (Group &g : group)
+                        {
+                            json temp;
+                            temp["groupid"] = g.getId();
+                            temp["name"] = g.getName();
+                            temp["desc"] = g.getDesc();
+                            vector<GroupUser> user_vec = g.getUsers();
+                            vector<string> gro_user;
+                            // 发送群组成员
+                            for (auto &guser : user_vec)
+                            {
+                                json mem;
+                                mem["guserid"] = guser.getId();
+                                mem["gusername"] = guser.getName();
+                                mem["guserrole"] = guser.getRole();
+                                mem["guserstate"] = guser.getState();
+                                gro_user.push_back(mem.dump());
+                            }
+                            temp["users"] = gro_user;
+                            gro.push_back(temp.dump());
+                        }
+                        response_info["group"] = gro;
+                    }
+                    conn->send(response_info.dump()); })
+                .detach();
         }
     }
     else
@@ -261,10 +292,12 @@ void ChatService::oneChat(const TcpConnectionPtr &conn, json &js, Timestamp time
     }
     else
     {
-        cout << "test_publish" << endl;
-        // 接收者在别的服务器上,发送Pulish请求
-        _redis.publish(to, js.dump());
-        cout << "test_publish_2" << endl;
+        // // 接收者在别的服务器上,发送Pulish请求
+        // _redis.publish(to, js.dump());
+
+        string topic = to_string(to);
+        string jsmsg = js.dump();
+        _kafka.publish(topic, jsmsg);
     }
 }
 
@@ -323,21 +356,45 @@ void ChatService::groupChat(const TcpConnectionPtr &conn, json &js, Timestamp ti
         }
         else
         {
-            // 群友在别的服务器上,发送Pulish请求
-            _redis.publish(id, js.dump());
+            // // 群友在别的服务器上,发送Pulish请求
+            // _redis.publish(id, js.dump());
+
+            string topic = to_string(id);
+            string jsmsg = js.dump();
+            _kafka.publish(topic, jsmsg);
         }
     }
 }
 
-void ChatService::handleRedisSubscribeMessage(int userid, string msg)
+// void ChatService::handleRedisSubscribeMessage(int userid, string msg)
+// {
+//     unique_lock<mutex> g1(_mtx);
+//     auto it = _userConn.find(userid);
+//     if (it != _userConn.end())
+//     {
+//         it->second->send(msg);
+//         return;
+//     }
+
+//     json js = json::parse(msg);
+//     string message = js["msg"];
+//     string name = js["name"];
+//     _offline.insert(userid, msg, name);
+// }
+
+void ChatService::handleKafkaMessage(string topic, string msg)
 {
-    cout << "test_handle" << endl;
-    unique_lock<mutex> g1(_mtx);
-    auto it = _userConn.find(userid);
-    if (it != _userConn.end())
+    cout << "Ready here" << endl;
+    int userid = stoi(topic);
+
     {
-        it->second->send(msg);
-        return;
+        unique_lock<mutex> g1(_mtx);
+        auto it = _userConn.find(userid);
+        if (it != _userConn.end())
+        {
+            it->second->send(msg);
+            return;
+        }
     }
 
     json js = json::parse(msg);

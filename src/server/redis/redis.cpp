@@ -103,10 +103,8 @@ void Redis::observer_channel_message()
     redisReply *reply = nullptr;
     while (redisGetReply(this->_subscribe_context, (void **)&reply) == REDIS_OK)
     {
-        cout << "test_reply_1" << endl;
         if (reply != nullptr && reply->element[2] != nullptr && reply->element[2]->str != nullptr)
         {
-            cout << "test_reply_2" << endl;
             cout << reply->element[2]->str << endl;
             // 订阅收到的消息不为空
             _notify_handler(atoi(reply->element[1]->str), reply->element[2]->str);
