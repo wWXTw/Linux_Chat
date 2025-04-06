@@ -4,5 +4,5 @@
 3. 利用 **nginx** 设置负载均衡器,为服务器集群提供负载均衡
 4. 利用 **kafka** 作为中间件,实现跨平台的服务器通讯
 
-2025/4/6 - version 2.0
+2025/4/6 - version 2.0  
 将中间件由Redis的publish/subscribe改写为kafka
