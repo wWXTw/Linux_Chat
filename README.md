@@ -6,3 +6,7 @@
 
 2025/4/6 - version 2.0  
 将中间件由Redis的publish/subscribe改写为kafka
+
+2025/4/23 - version 2.1
+修改客户端与服务端的TCP发送接收过程,防止粘包/拆包问题
+

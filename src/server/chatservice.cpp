@@ -2,6 +2,11 @@
 #include "public.hpp"
 #include <muduo/base/Logging.h>
 
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 using namespace placeholders;
 
 ChatService *ChatService::instance()
@@ -226,7 +231,12 @@ void ChatService::login(const TcpConnectionPtr &conn, json &js, Timestamp time)
                         }
                         response_info["group"] = gro;
                     }
-                    conn->send(response_info.dump()); })
+                    string msg_body = response_info.dump();
+                    int msg_len = htonl(msg_body.size());
+                    string final_msg;
+                    final_msg.append((char*)&msg_len, 4);
+                    final_msg.append(msg_body);
+                    conn->send(final_msg); })
                 .detach();
         }
     }
@@ -272,14 +282,20 @@ void ChatService::oneChat(const TcpConnectionPtr &conn, json &js, Timestamp time
     int from = js["from"].get<int>();
     int to = js["to"].get<int>();
     string msg = js["msg"];
+
     // 查看接受者当前是否在线
     {
         unique_lock<mutex> g1(_mtx);
         auto it = _userConn.find(to);
         if (it != _userConn.end())
         {
+            string msg_body = js.dump();
+            int len = htonl(msg_body.size());
+            string msg_final;
+            msg_final.append((char *)&len, 4);
+            msg_final.append(msg_body);
             // 接收者在线
-            it->second->send(js.dump());
+            it->second->send(msg_final);
             return;
         }
     }
@@ -392,7 +408,15 @@ void ChatService::handleKafkaMessage(string topic, string msg)
         auto it = _userConn.find(userid);
         if (it != _userConn.end())
         {
-            it->second->send(msg);
+            string msg_body = msg;
+            cout << "handle size " << msg_body.size();
+            int len = htonl(msg_body.size());
+            cout << "handle size " << len << endl;
+            string msg_final;
+            msg_final.append((char *)&len, 4);
+            msg_final.append(msg_body);
+
+            it->second->send(msg_final);
             return;
         }
     }

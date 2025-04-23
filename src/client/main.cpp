@@ -27,7 +27,8 @@ vector<Group> currentUser_GroupList;
 bool login_flag = false;
 // 显示当前登录用户成功的基本信息
 void showCurrentUser();
-
+// 用于防止粘包的接收函数
+bool recv_secure(int, char *, int);
 // 帮助函数
 void help(int, string);
 // 添加好友函数
@@ -82,15 +83,15 @@ void Login(int clientfd)
     }
     else
     {
-        char buffer[1024] = {0};
-        len = recv(clientfd, buffer, 1024, 0);
+        char login_buffer[1024] = {0};
+        len = recv(clientfd, login_buffer, 1024, 0);
         if (len == -1)
         {
             cerr << "接收登录响应失败" << endl;
         }
         else
         {
-            json response = json::parse(buffer);
+            json response = json::parse(login_buffer);
             if (response["errorid"].get<int>() != 0)
             {
                 // 登录失败
@@ -107,89 +108,105 @@ void Login(int clientfd)
                 // 等待服务器端登录的详细数据
                 while (true)
                 {
-                    memset(buffer, 0, sizeof(buffer));
-                    len = recv(clientfd, buffer, 1024, 0);
-                    if (len <= 0)
+                    char header[4] = {0};
+                    if (!recv_secure(clientfd, header, 4))
                     {
-                        cerr << "接收用户信息失败" << endl;
+                        cerr << "接收服务器端消息异常" << endl;
                         return;
                     }
-
-                    json info_response = json::parse(buffer);
-                    if (info_response["msgid"].get<int>() == LOGIN_INFO_ACK)
+                    // 获取消息的长度
+                    int msg_len = ntohl(*(int *)header);
+                    if (msg_len <= 0 || msg_len > 10000)
                     {
-                        // 记录当前用户的好友列表
-                        if (info_response.contains("friends"))
-                        {
-                            // 初始化全局变量
-                            currentUser_FriendList.clear();
-
-                            vector<string> friends = info_response["friends"];
-                            for (string &str : friends)
-                            {
-                                json js = json::parse(str);
-                                User fri;
-                                fri.setId(js["id"].get<int>());
-                                fri.setName(js["name"]);
-                                fri.setState(js["state"]);
-                                currentUser_FriendList.push_back(fri);
-                            }
-                        }
-
-                        // 记录当前用户的群组列表
-                        if (info_response.contains("group"))
-                        {
-                            // 初始化全局变量
-                            currentUser_GroupList.clear();
-
-                            vector<string> group = info_response["group"];
-                            for (string &g : group)
-                            {
-                                // 群组基本信息
-                                json js_g = json::parse(g);
-                                Group temp;
-                                temp.setId(js_g["groupid"].get<int>());
-                                temp.setName(js_g["name"]);
-                                temp.setDesc(js_g["desc"]);
-
-                                // 群组成员信息
-                                vector<string> users_vec = js_g["users"];
-                                for (string &user : users_vec)
-                                {
-                                    GroupUser mem;
-                                    json user_js = json::parse(user);
-                                    mem.setId(user_js["guserid"].get<int>());
-                                    mem.setName(user_js["gusername"]);
-                                    mem.setRole(user_js["guserrole"]);
-                                    mem.setState(user_js["guserstate"]);
-
-                                    temp.getUsers().push_back(mem);
-                                }
-
-                                currentUser_GroupList.push_back(temp);
-                            }
-                        }
-
-                        // 显示登录用户的基本信息
-                        showCurrentUser();
-
-                        // 显示当前用户的离线消息
-                        if (info_response.contains("offlineMsg"))
-                        {
-                            // 离线信息 私聊与群聊的区分
-                            // TODO...
-                            cout << "============离线信息============" << endl;
-                            unordered_map<string, vector<string>> offlineMsg = info_response["offlineMsg"].get<unordered_map<string, vector<string>>>();
-                            for (auto &pair : offlineMsg)
-                            {
-                                for (auto &str : pair.second)
-                                {
-                                    cout << pair.first << "   " << str << endl;
-                                }
-                            }
-                        }
-
+                        cerr << "消息长度非法: " << msg_len << endl;
                         break;
+                    }
+                    // 读取消息体
+                    char *buffer = new char[msg_len + 1];
+                    memset(buffer, 0, msg_len + 1);
+                    if (!recv_secure(clientfd, buffer, msg_len))
+                    {
+                        cerr << "接收服务器端消息异常" << endl;
+                        delete[] buffer;
+                        return;
+                    }
+                    else
+                    {
+                        json info_response = json::parse(buffer);
+                        if (info_response["msgid"].get<int>() == LOGIN_INFO_ACK)
+                        {
+                            // 记录当前用户的好友列表
+                            if (info_response.contains("friends"))
+                            {
+                                // 初始化全局变量
+                                currentUser_FriendList.clear();
+
+                                vector<string> friends = info_response["friends"];
+                                for (string &str : friends)
+                                {
+                                    json js = json::parse(str);
+                                    User fri;
+                                    fri.setId(js["id"].get<int>());
+                                    fri.setName(js["name"]);
+                                    fri.setState(js["state"]);
+                                    currentUser_FriendList.push_back(fri);
+                                }
+                            }
+
+                            // 记录当前用户的群组列表
+                            if (info_response.contains("group"))
+                            {
+                                // 初始化全局变量
+                                currentUser_GroupList.clear();
+
+                                vector<string> group = info_response["group"];
+                                for (string &g : group)
+                                {
+                                    // 群组基本信息
+                                    json js_g = json::parse(g);
+                                    Group temp;
+                                    temp.setId(js_g["groupid"].get<int>());
+                                    temp.setName(js_g["name"]);
+                                    temp.setDesc(js_g["desc"]);
+
+                                    // 群组成员信息
+                                    vector<string> users_vec = js_g["users"];
+                                    for (string &user : users_vec)
+                                    {
+                                        GroupUser mem;
+                                        json user_js = json::parse(user);
+                                        mem.setId(user_js["guserid"].get<int>());
+                                        mem.setName(user_js["gusername"]);
+                                        mem.setRole(user_js["guserrole"]);
+                                        mem.setState(user_js["guserstate"]);
+
+                                        temp.getUsers().push_back(mem);
+                                    }
+
+                                    currentUser_GroupList.push_back(temp);
+                                }
+                            }
+
+                            // 显示登录用户的基本信息
+                            showCurrentUser();
+
+                            // 显示当前用户的离线消息
+                            if (info_response.contains("offlineMsg"))
+                            {
+                                // 离线信息 私聊与群聊的区分
+                                // TODO...
+                                cout << "============离线信息============" << endl;
+                                unordered_map<string, vector<string>> offlineMsg = info_response["offlineMsg"].get<unordered_map<string, vector<string>>>();
+                                for (auto &pair : offlineMsg)
+                                {
+                                    for (auto &str : pair.second)
+                                    {
+                                        cout << pair.first << "   " << str << endl;
+                                    }
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
 
@@ -341,20 +358,53 @@ void showCurrentUser()
     }
 }
 
+bool recv_secure(int clientfd, char *buffer, int len)
+{
+    // 进行读取操作
+    int total = 0;
+    while (total < len)
+    {
+        int cur = recv(clientfd, buffer + total, len - total, 0);
+        if (cur <= 0)
+            return false;
+        total += cur;
+    }
+    return true;
+}
+
 void readTaskHandler(int clientfd)
 {
     for (;;)
     {
-        char buffer[1024] = {0};
-        int len = recv(clientfd, buffer, 1024, 0);
-        if (len <= 0)
+        // 读取4字节的包头
+        char header[4] = {0};
+        if (!recv_secure(clientfd, header, 4))
         {
-            close(clientfd);
-            exit(-1);
+            cerr << "接收服务器端消息异常" << endl;
+            login_flag = false;
+            break;
+        }
+        // 获取消息的长度
+        int msg_len = ntohl(*(int *)header);
+        if (msg_len <= 0 || msg_len > 10000)
+        {
+            cerr << "消息长度非法: " << msg_len << endl;
+            break;
+        }
+        // 读取消息体
+        char *buffer = new char[msg_len + 1];
+        memset(buffer, 0, msg_len + 1);
+        if (!recv_secure(clientfd, buffer, msg_len))
+        {
+            cerr << "接收服务器端消息异常" << endl;
+            login_flag = false;
+            delete[] buffer;
+            break;
         }
         else
         {
             json js = json::parse(buffer);
+            delete[] buffer;
             // 接收单发消息
             if (js["msgid"].get<int>() == ONE_CHAT_MSG)
             {
